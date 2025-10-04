@@ -22,7 +22,13 @@ class OverlayScreen(QWidget):
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint)
 
         # A list of QPolygon objects containing the points of the arrows
-        self.arrows = []
+        self.moves_to_draw = []
+        self.arrow_colors = [
+            QColor(0, 255, 0, 122),   # Best move: green
+            QColor(0, 0, 255, 122),   # Second best: blue
+            QColor(255, 255, 0, 122), # Third best: yellow
+            QColor(255, 0, 0, 122)    # Default/fallback: red
+        ]
 
         # Start the message queue thread
         self.message_queue_thread = threading.Thread(target=self.message_queue_thread)
@@ -42,32 +48,35 @@ class OverlayScreen(QWidget):
             message = self.stockfish_queue.get()
             self.set_arrows(message)
 
-    def set_arrows(self, arrows):
+    def set_arrows(self, moves_data):
         """
         This function is used to set the arrows to be drawn on the screen
         Args:
-            arrows: A list of tuples containing the start and end position of the arrows
-            in the form of ((start_point, end_point), (start_point, end_point))
+            moves_data: A list of dictionaries with move coordinates and rank
         Returns:
             None
         """
 
-        self.arrows = []
-        for arrow in arrows:
-            poly = self.get_arrow_polygon(
-                QPoint(arrow[0][0], arrow[0][1]),
-                QPoint(arrow[1][0], arrow[1][1])
-            )
-            self.arrows.append(poly)
+        self.moves_to_draw = []
+        if isinstance(moves_data, list):
+            for move_info in moves_data:
+                start_coords = move_info.get('coords', [[0,0]])[0]
+                end_coords = move_info.get('coords', [[0,0]])[1]
+                start_point = QPoint(start_coords[0], start_coords[1])
+                end_point = QPoint(end_coords[0], end_coords[1])
+                poly = self.get_arrow_polygon(start_point, end_point)
+                rank = move_info.get('rank', 3)
+                color = self.arrow_colors[min(rank, len(self.arrow_colors) - 1)]
+                self.moves_to_draw.append({'polygon': poly, 'color': color})
         self.update()
 
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
-        painter.setPen(QPen(Qt.GlobalColor.red, 1, Qt.PenStyle.NoPen))
-        painter.setBrush(QBrush(QColor(255, 0, 0, 122), Qt.BrushStyle.SolidPattern))
-        for arrow in self.arrows:
-            painter.drawPolygon(arrow)
+        for move in self.moves_to_draw:
+            painter.setPen(QPen(Qt.GlobalColor.black, 1, Qt.PenStyle.NoPen))
+            painter.setBrush(QBrush(move['color'], Qt.BrushStyle.SolidPattern))
+            painter.drawPolygon(move['polygon'])
         painter.end()
 
     def get_arrow_polygon(self, start_point, end_point):
@@ -110,6 +119,7 @@ class OverlayScreen(QWidget):
             return QPolygon([end_point, point2, mid_point1, start_right, start_left, mid_point2, point3])
         except Exception as e:
             print(e)
+            return QPolygon()
 
 
 def run(stockfish_queue):
@@ -125,3 +135,4 @@ def run(stockfish_queue):
     overlay = OverlayScreen(stockfish_queue)
     overlay.show()
     app.exec()
+

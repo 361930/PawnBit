@@ -195,30 +195,74 @@ class StockfishBot(multiprocess.Process):
                         if not board.is_legal(chess.Move.from_uci(move)):
                             move = stockfish.get_best_move()
                     else:
-                        move = stockfish.get_best_move()
+                        if self.enable_manual_mode:
+                            top_moves = stockfish.get_top_moves(3)
+                            if top_moves:
+                                move = top_moves[0]['Move']
+                            else:
+                                move = stockfish.get_best_move() # Fallback
+                        else:
+                            move = stockfish.get_best_move()
+
 
                     # Wait for keypress or player movement if in manual mode
                     self_moved = False
                     if self.enable_manual_mode:
-                        move_start_pos, move_end_pos = self.get_move_pos(move)
-                        self.overlay_queue.put([
-                            ((int(move_start_pos[0]), int(move_start_pos[1])), (int(move_end_pos[0]), int(move_end_pos[1]))),
-                        ])
+                        if 'top_moves' in locals() and top_moves:
+                            overlay_moves = []
+                            gui_moves = []
+                            for i, move_info in enumerate(top_moves):
+                                move_uci = move_info['Move']
+                                start_pos, end_pos = self.get_move_pos(move_uci)
+                                overlay_moves.append({
+                                    'coords': ((int(start_pos[0]), int(start_pos[1])), (int(end_pos[0]), int(end_pos[1]))),
+                                    'rank': i
+                                })
+                                try:
+                                    san_move = board.san(chess.Move.from_uci(move_uci))
+                                except Exception:
+                                    san_move = move_uci
+
+                                if move_info['Mate'] is not None:
+                                    mate_val = move_info['Mate']
+                                    if board.turn == chess.BLACK:
+                                        mate_val = -mate_val
+                                    evaluation = f"M{mate_val}"
+                                else:
+                                    cp = move_info.get('Centipawn')
+                                    if cp is not None:
+                                        if board.turn == chess.BLACK:
+                                            cp = -cp
+                                        evaluation = f"{cp / 100.0:+.2f}"
+                                    else:
+                                        evaluation = "N/A"
+                                gui_moves.append({'move': san_move, 'eval': evaluation})
+                            self.overlay_queue.put(overlay_moves)
+                            self.pipe.send({'type': 'TOP_MOVES', 'data': gui_moves})
+                        elif move:
+                            move_start_pos, move_end_pos = self.get_move_pos(move)
+                            self.overlay_queue.put([{'coords':((int(move_start_pos[0]), int(move_start_pos[1])), (int(move_end_pos[0]), int(move_end_pos[1]))), 'rank': 3}])
+                        
+                        if not move:
+                            return
+
                         while True:
                             if keyboard.is_pressed("3"):
                                 break
 
-                            if len(move_list) != len(self.grabber.get_move_list()):
+                            current_move_list = self.grabber.get_move_list()
+                            if len(move_list) != len(current_move_list):
                                 self_moved = True
-                                move_list = self.grabber.get_move_list()
+                                move_list = current_move_list
                                 move_san = move_list[-1]
                                 move = board.parse_san(move_san).uci()
                                 board.push_uci(move)
                                 stockfish.make_moves_from_current_position([move])
                                 break
+                            time.sleep(0.01)
 
                     if not self_moved:
-                        move_san = board.san(chess.Move(chess.parse_square(move[0:2]), chess.parse_square(move[2:4])))
+                        move_san = board.san(chess.Move.from_uci(move))
                         board.push_uci(move)
                         stockfish.make_moves_from_current_position([move])
                         move_list.append(move_san)
@@ -228,6 +272,8 @@ class StockfishBot(multiprocess.Process):
                             self.make_move(move)
 
                     self.overlay_queue.put([])
+                    if self.enable_manual_mode:
+                        self.pipe.send({'type': 'TOP_MOVES', 'data': []})
 
                     # Send the move to the GUI
                     self.pipe.send("S_MOVE" + move_san)
@@ -278,3 +324,4 @@ class StockfishBot(multiprocess.Process):
             exc_type, exc_obj, exc_tb = sys.exc_info()
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
             print(exc_type, fname, exc_tb.tb_lineno)
+

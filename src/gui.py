@@ -1,5 +1,5 @@
 import os
-
+import platform
 import multiprocess
 import threading
 import time
@@ -42,6 +42,9 @@ class GUI:
 
         # Used for storing the match moves
         self.match_moves = []
+        
+        # Used for storing the top moves
+        self.top_moves = []
 
         # Set the window properties
         master.title("Chess")
@@ -259,6 +262,50 @@ class GUI:
         # Create the stockfish path text
         self.stockfish_path_text = tk.Label(left_frame, text="", wraplength=180)
         self.stockfish_path_text.pack(anchor=tk.NW)
+        
+        # Create the select chromedriver button
+        self.chromedriver_path = ""
+        self.select_chromedriver_button = tk.Button(
+            left_frame,
+            text="Select ChromeDriver",
+            command=self.on_select_chromedriver_button_listener,
+        )
+        self.select_chromedriver_button.pack(anchor=tk.NW, pady=(10, 0))
+
+        # Create the chromedriver path text
+        self.chromedriver_path_text = tk.Label(left_frame, text="Optional. Uses manager if empty.", wraplength=180, justify=tk.LEFT)
+        self.chromedriver_path_text.pack(anchor=tk.NW)
+
+
+        # Create the select chrome profile button
+        self.chrome_profile_path = ""
+        self.select_chrome_profile_button = tk.Button(
+            left_frame,
+            text="Select Chrome Profile",
+            command=self.on_select_chrome_profile_button_listener,
+        )
+        self.select_chrome_profile_button.pack(anchor=tk.NW, pady=(10, 0))
+
+        # Create the chrome profile path text
+        self.chrome_profile_path_text = tk.Label(left_frame, text="Optional. Uses new profile if empty.", wraplength=180, justify=tk.LEFT)
+        self.chrome_profile_path_text.pack(anchor=tk.NW)
+
+        # Get default chrome profile path
+        system = platform.system()
+        path_hint = ""
+        self.default_chrome_profile_path = ""
+        if system == "Windows":
+            self.default_chrome_profile_path = os.path.join(os.getenv('LOCALAPPDATA'), 'Google', 'Chrome', 'User Data')
+            path_hint = f"Default: {self.default_chrome_profile_path}"
+        elif system == "Linux":
+            self.default_chrome_profile_path = os.path.expanduser("~/.config/google-chrome")
+            path_hint = "Default: ~/.config/google-chrome/"
+        elif system == "Darwin": # macOS
+            self.default_chrome_profile_path = os.path.expanduser("~/Library/Application Support/Google/Chrome")
+            path_hint = "Default: ~/Library/Application Support/Google/Chrome/"
+
+        self.chrome_profile_help_text = tk.Label(left_frame, text=path_hint, wraplength=180, justify=tk.LEFT, fg="grey")
+        self.chrome_profile_help_text.pack(anchor=tk.NW)
 
         left_frame.grid(row=0, column=0, padx=5, sticky=tk.NW)
 
@@ -302,6 +349,16 @@ class GUI:
             right_frame, text="Export PGN", command=self.on_export_pgn_button_listener
         )
         self.export_pgn_button.pack(anchor=tk.NW, fill=tk.X)
+
+        # Create the top moves display
+        self.top_moves_frame = tk.Frame(right_frame)
+        self.top_moves_label = tk.Label(self.top_moves_frame, text="Top Moves:", font=('Helvetica', 10, 'bold'))
+        self.top_moves_label.pack(anchor=tk.W)
+        self.top_moves_display = tk.Label(self.top_moves_frame, text="", justify=tk.LEFT, font=('Courier', 9))
+        self.top_moves_display.pack(anchor=tk.W)
+        self.top_moves_frame.pack(anchor=tk.NW, fill=tk.X, pady=5)
+        self.top_moves_frame.pack_forget() # Hide by default
+
 
         right_frame.grid(row=0, column=1, sticky=tk.NW)
 
@@ -368,21 +425,17 @@ class GUI:
                     self.chrome = None
             except IndexError:
                 pass
+            except WebDriverException: # Browser was closed manually
+                self.opened_browser = False
+                self.open_browser_button["text"] = "Open Browser"
+                self.open_browser_button["state"] = "normal"
+                self.open_browser_button.update()
+                self.on_stop_button_listener()
+                self.chrome = None
+
             time.sleep(0.1)
 
     # Responsible for communicating with the Stockfish Bot process
-    # The pipe can receive the following commands:
-    # - "START": Resets and starts the Stockfish Bot
-    # - "S_MOVE": Sends the Stockfish Bot a single move to make
-    #   Ex. "S_MOVEe4
-    # - "M_MOVE": Sends the Stockfish Bot multiple moves to make
-    #   Ex. "S_MOVEe4,c5,Nf3
-    # - "ERR_EXE": Notifies the GUI that the Stockfish Bot can't initialize Stockfish
-    # - "ERR_PERM": Notifies the GUI that the Stockfish Bot can't execute the Stockfish executable
-    # - "ERR_BOARD": Notifies the GUI that the Stockfish Bot can't find the board
-    # - "ERR_COLOR": Notifies the GUI that the Stockfish Bot can't find the player color
-    # - "ERR_MOVES": Notifies the GUI that the Stockfish Bot can't find the moves list
-    # - "ERR_GAMEOVER": Notifies the GUI that the current game is already over
     def process_communicator_thread(self):
         while not self.exit:
             try:
@@ -391,9 +444,16 @@ class GUI:
                     and self.stockfish_bot_pipe.poll()
                 ):
                     data = self.stockfish_bot_pipe.recv()
+                    
+                    if isinstance(data, dict):
+                        if data.get('type') == 'TOP_MOVES':
+                            self.update_top_moves_display(data.get('data', []))
+                        continue
+
                     if data == "START":
                         self.clear_tree()
                         self.match_moves = []
+                        self.update_top_moves_display([])
 
                         # Update the status text
                         self.status_text["text"] = "Running"
@@ -448,7 +508,7 @@ class GUI:
                             "Error",
                             "Game has already finished!"
                         )
-            except (BrokenPipeError, OSError):
+            except (BrokenPipeError, OSError, EOFError):
                 self.stockfish_bot_pipe = None
 
             time.sleep(0.1)
@@ -464,6 +524,23 @@ class GUI:
             elif keyboard.is_pressed("2"):
                 self.on_stop_button_listener()
 
+    def on_select_chromedriver_button_listener(self):
+        f = filedialog.askopenfilename()
+        if not f:
+            return
+        self.chromedriver_path = f
+        self.chromedriver_path_text["text"] = self.chromedriver_path
+        self.chromedriver_path_text.update()
+
+    def on_select_chrome_profile_button_listener(self):
+        f = filedialog.askdirectory(initialdir=self.default_chrome_profile_path)
+        if not f:
+            return
+
+        self.chrome_profile_path = f
+        self.chrome_profile_path_text["text"] = self.chrome_profile_path
+        self.chrome_profile_path_text.update()
+
     def on_open_browser_button_listener(self):
         # Set Opening Browser button state to opening
         self.opening_browser = True
@@ -476,38 +553,30 @@ class GUI:
         options.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
         options.add_argument('--disable-blink-features=AutomationControlled')
         options.add_experimental_option('useAutomationExtension', False)
+        if self.chrome_profile_path:
+            options.add_argument(f"--user-data-dir={self.chrome_profile_path}")
+
         try:
-            chrome_install = ChromeDriverManager().install()
-
-            folder = os.path.dirname(chrome_install)
-            chromedriver_path = os.path.join(folder, "chromedriver.exe")
-
-            service = ChromeService(chromedriver_path)
-            self.chrome = webdriver.Chrome(
-                service=service,
-                options=options
-            )
-        except WebDriverException:
-            # No chrome installed
-            self.opening_browser = False
-            self.open_browser_button["text"] = "Open Browser"
-            self.open_browser_button["state"] = "normal"
-            self.open_browser_button.update()
-            tk.messagebox.showerror(
-                "Error",
-                "Cant find Chrome. You need to have Chrome installed for this to work.",
-            )
-            return
+            if self.chromedriver_path:
+                service = ChromeService(executable_path=self.chromedriver_path)
+            else:
+                driver_path = ChromeDriverManager().install()
+                service = ChromeService(executable_path=driver_path)
+            
+            self.chrome = webdriver.Chrome(service=service, options=options)
         except Exception as e:
-            # Other error
+            error_message = f"An error occurred while opening the browser: {e}"
+            if "version cannot be discovered" in str(e):
+                error_message = "Could not find a matching ChromeDriver for your version of Chrome. Please update Google Chrome and try the automatic method, or select the chromedriver.exe manually."
+            elif "user data directory is already in use" in str(e):
+                error_message = "Chrome profile is already in use. Please close all Chrome windows using that profile and try again."
+            
+            tk.messagebox.showerror("Error", error_message)
+
             self.opening_browser = False
             self.open_browser_button["text"] = "Open Browser"
             self.open_browser_button["state"] = "normal"
             self.open_browser_button.update()
-            tk.messagebox.showerror(
-                "Error",
-                f"An error occurred while opening the browser: {e}",
-            )
             return
 
         # Open chess.com
@@ -631,6 +700,8 @@ class GUI:
         self.start_button["state"] = "normal"
         self.start_button["command"] = self.on_start_button_listener
         self.start_button.update()
+        
+        self.update_top_moves_display([])
 
     def on_topmost_check_button_listener(self):
         if self.enable_topmost.get() == 1:
@@ -703,12 +774,32 @@ class GUI:
 
         self.tree.update()
 
+    def update_top_moves_display(self, top_moves):
+        if not top_moves:
+            self.top_moves_display.config(text="")
+            return
+
+        display_text = []
+        colors = ['green', 'blue', 'goldenrod']
+        for i, move_info in enumerate(top_moves):
+            move = move_info['move']
+            eval_score = move_info['eval']
+            
+            # Format move and eval to align them
+            # You might need to adjust the padding based on your font and typical move lengths
+            display_text.append(f"{i+1}. {move:<8} ({eval_score})")
+
+        self.top_moves_display.config(text="\n".join(display_text))
+
     def on_manual_mode_checkbox_listener(self):
         if self.enable_manual_mode.get() == 1:
             self.manual_mode_frame.pack(after=self.manual_mode_checkbox)
+            self.top_moves_frame.pack(anchor=tk.NW, fill=tk.X, pady=5)
             self.manual_mode_frame.update()
+            self.top_moves_frame.update()
         else:
             self.manual_mode_frame.pack_forget()
+            self.top_moves_frame.pack_forget()
             self.manual_mode_checkbox.update()
 
 
@@ -716,3 +807,4 @@ if __name__ == "__main__":
     window = tk.Tk()
     my_gui = GUI(window)
     window.mainloop()
+
