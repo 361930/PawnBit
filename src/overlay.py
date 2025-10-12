@@ -135,4 +135,3 @@ def run(stockfish_queue):
     overlay = OverlayScreen(stockfish_queue)
     overlay.show()
     app.exec()
-
